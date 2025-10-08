@@ -24,9 +24,9 @@ def fast_visualize(agent_name, env_name, model_path, episodes=3, render_every=5)
     
     # Map environment names to IDs
     env_map = {
-        'ant': 'Ant-v4',
-        'breakout': 'BreakoutNoFrameskip-v4',
-        'seaquest': 'SeaquestNoFrameskip-v4'
+        'ant': 'Ant-v5',
+        'breakout': 'ALE/Breakout-v5',
+        'seaquest': 'ALE/Seaquest-v5'
     }
     
     env_id = env_map[env_name]

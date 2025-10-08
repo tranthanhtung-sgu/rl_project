@@ -24,9 +24,9 @@ def quick_visualize(agent_name, env_name, model_path, episodes=3):
     
     # Map environment names to IDs
     env_map = {
-        'ant': 'Ant-v4',
-        'breakout': 'BreakoutNoFrameskip-v4',
-        'seaquest': 'SeaquestNoFrameskip-v4'
+        'ant': 'Ant-v5',
+        'breakout': 'ALE/Breakout-v5',
+        'seaquest': 'ALE/Seaquest-v5'
     }
     
     env_id = env_map[env_name]
@@ -39,7 +39,7 @@ def quick_visualize(agent_name, env_name, model_path, episodes=3):
     # Get environment dimensions
     state_dim, action_dim, is_continuous = get_env_dimensions(env_id)
     
-    # Create agent
+    # Create agent  
     print(f"Creating {agent_name.upper()} agent...")
     if agent_name == 'reinforce':
         agent = ReinforceAgent(state_dim, action_dim, is_continuous, lr=0.001, gamma=0.99, device='cpu')

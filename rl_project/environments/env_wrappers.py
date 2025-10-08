@@ -1,21 +1,22 @@
 import gymnasium as gym
 from gymnasium.wrappers import (
     AtariPreprocessing,
-    FrameStack,
-    GrayScaleObservation,
+    FrameStackObservation,
+    GrayscaleObservation,
     ResizeObservation,
     RecordEpisodeStatistics,
     RecordVideo
 )
 import numpy as np
+import ale_py.roms  # Import ALE ROMs to register ALE environments
 
 def make_env(env_id, seed=42, capture_video=False, run_name=None, render_mode=None):
     """
     Create and configure an environment with appropriate wrappers.
     
     Args:
-        env_id (str): The ID of the environment to create ('Ant-v4', 
-                     'BreakoutNoFrameskip-v4', or 'SeaquestNoFrameskip-v4')
+        env_id (str): The ID of the environment to create ('Ant-v5', 
+                     'ALE/Breakout-v5', or 'ALE/Seaquest-v5')
         seed (int): Random seed for reproducibility
         capture_video (bool): Whether to capture videos of episodes
         run_name (str): Name of the run for video capturing
@@ -25,7 +26,7 @@ def make_env(env_id, seed=42, capture_video=False, run_name=None, render_mode=No
         gym.Env: The configured environment
     """
     # Determine if the environment is Atari
-    is_atari = 'NoFrameskip' in env_id
+    is_atari = 'NoFrameskip' in env_id or 'ALE/' in env_id
     
     # Create the base environment
     if render_mode is None:
@@ -44,20 +45,30 @@ def make_env(env_id, seed=42, capture_video=False, run_name=None, render_mode=No
     env.observation_space.seed(seed)
     
     if is_atari:
-        # Apply standard Atari preprocessing
-        env = AtariPreprocessing(
-            env,
-            terminal_on_life_loss=False,
-            scale_obs=False,
-            grayscale_obs=True,
-            grayscale_newaxis=True,
-            frame_skip=4,
-            noop_max=30
-        )
-        # Resize observation to 84x84
-        env = ResizeObservation(env, (84, 84))
-        # Stack 4 frames
-        env = FrameStack(env, 4)
+        # For ALE v5 environments, they already have frame-skipping built-in
+        if 'ALE/' in env_id:
+            # ALE v5 environments already have frame-skipping, so we only need:
+            # Resize observation to 84x84
+            env = ResizeObservation(env, (84, 84))
+            # Convert to grayscale
+            env = GrayscaleObservation(env, keep_dim=True)
+            # Stack 4 frames
+            env = FrameStackObservation(env, stack_size=4)
+        else:
+            # For older Atari environments, use full preprocessing
+            env = AtariPreprocessing(
+                env,
+                terminal_on_life_loss=False,
+                scale_obs=False,
+                grayscale_obs=True,
+                grayscale_newaxis=True,
+                frame_skip=4,
+                noop_max=30
+            )
+            # Resize observation to 84x84
+            env = ResizeObservation(env, (84, 84))
+            # Stack 4 frames
+            env = FrameStackObservation(env, stack_size=4)
     
     return env
 

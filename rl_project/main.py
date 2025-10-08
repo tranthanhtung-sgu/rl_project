@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from agents import ReinforceAgent, A2CAgent, DDPGAgent
+from agents import ReinforceAgent, A2CAgent, DDPGAgent, DQNAgent, PPOAgent
 from environments import make_env, get_env_dimensions
 from utils import set_seeds, create_log_dir, MetricsLogger
 
@@ -14,9 +14,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train RL agents on various environments')
     
     # Agent and environment selection
-    parser.add_argument('--agent', type=str, required=True, choices=['reinforce', 'a2c', 'ddpg'],
+    parser.add_argument('--agent', type=str, required=True, choices=['reinforce', 'a2c', 'dqn', 'ppo'],
                         help='Agent to use for training')
-    parser.add_argument('--env', type=str, required=True, choices=['ant', 'breakout', 'seaquest'],
+    parser.add_argument('--env', type=str, required=True, choices=['seaquest'],
                         help='Environment to train on')
     
     # Training parameters
@@ -28,11 +28,13 @@ def parse_args():
                         help='Learning rate')
     parser.add_argument('--gamma', type=float, default=0.99,
                         help='Discount factor')
+    parser.add_argument('--num_envs', type=int, default=8,
+                        help='Number of parallel environments for faster data collection')
     
     # DDPG-specific parameters
-    parser.add_argument('--buffer_size', type=int, default=1000000,
+    parser.add_argument('--buffer_size', type=int, default=2000000,
                         help='Size of replay buffer (for DDPG)')
-    parser.add_argument('--batch_size', type=int, default=256,
+    parser.add_argument('--batch_size', type=int, default=1024,
                         help='Batch size for updates (for DDPG)')
     parser.add_argument('--tau', type=float, default=0.005,
                         help='Soft update coefficient (for DDPG)')
@@ -62,9 +64,7 @@ def parse_args():
 def map_env_name_to_id(env_name):
     """Map environment name to Gymnasium ID"""
     env_map = {
-        'ant': 'Ant-v4',
-        'breakout': 'BreakoutNoFrameskip-v4',
-        'seaquest': 'SeaquestNoFrameskip-v4'
+        'seaquest': 'ALE/Seaquest-v5'
     }
     return env_map.get(env_name)
 
@@ -91,16 +91,30 @@ def create_agent(agent_name, state_dim, action_dim, is_continuous, args):
             value_loss_coef=args.value_loss_coef,
             device=args.device
         )
-    elif agent_name == 'ddpg':
-        return DDPGAgent(
+    elif agent_name == 'dqn':
+        return DQNAgent(
             state_dim=state_dim,
             action_dim=action_dim,
-            actor_lr=args.lr,
-            critic_lr=args.lr * 10,  # Critic typically uses higher learning rate
+            is_continuous=is_continuous,
+            lr=args.lr,
             gamma=args.gamma,
-            tau=args.tau,
-            buffer_size=args.buffer_size,
-            batch_size=args.batch_size,
+            device=args.device
+        )
+    elif agent_name == 'ppo':
+        return PPOAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            is_continuous=is_continuous,
+            lr=args.lr if args.lr else 2.5e-4,
+            gamma=args.gamma,
+            gae_lambda=0.90,
+            clip_range=0.10,
+            ent_coef=args.entropy_coef if hasattr(args, 'entropy_coef') else 0.01,
+            vf_coef=args.value_loss_coef if hasattr(args, 'value_loss_coef') else 0.5,
+            n_steps=128,
+            batch_size=256,
+            n_epochs=4,
+            max_grad_norm=0.5,
             device=args.device
         )
     else:
@@ -133,8 +147,14 @@ def evaluate_agent(agent, env_id, num_episodes=5):
         episode_length = 0
         
         while not (done or truncated):
-            # Select action
-            action = agent.select_action(state)
+            # Select action without affecting training buffers
+            if isinstance(agent, DDPGAgent):
+                action = agent.select_action(state, evaluate=True)
+            else:
+                try:
+                    action = agent.select_action(state, stochastic=False, store=False)
+                except TypeError:
+                    action = agent.select_action(state, stochastic=False)
             
             # Take action in environment
             next_state, reward, done, truncated, _ = eval_env.step(action)
@@ -396,8 +416,62 @@ def main():
             train_reinforce(agent, env, args, logger)
         elif args.agent == 'a2c':
             train_a2c(agent, env, args, logger)
-        elif args.agent == 'ddpg':
-            train_ddpg(agent, env, args, logger)
+        elif args.agent == 'dqn':
+            # Reuse A2C loop structure but with DQN update steps inside train loop
+            # Simpler: run a custom minimal loop here for DQN (kept brief)
+            for episode in tqdm(range(1, args.episodes + 1)):
+                state, _ = env.reset()
+                done = False
+                truncated = False
+                episode_reward = 0
+                episode_length = 0
+                logger.start_episode()
+                while not (done or truncated):
+                    action = agent.select_action(state)
+                    next_state, reward, done, truncated, _ = env.step(action)
+                    agent.store_transition(state, action, reward, next_state, done or truncated)
+                    agent.update()
+                    state = next_state
+                    episode_reward += reward
+                    episode_length += 1
+                logger.end_episode(episode_reward, episode_length, {'loss': 0})
+                if episode % 10 == 0:
+                    logger.save()
+                if episode % args.eval_freq == 0:
+                    eval_reward, eval_length = evaluate_agent(agent, map_env_name_to_id(args.env), args.eval_episodes)
+                    print(f"Episode {episode} | Eval Reward: {eval_reward:.2f} | Eval Length: {eval_length:.2f}")
+        elif args.agent == 'ppo':
+            # Minimal PPO rollout loop: n_steps per episode equivalent
+            state, _ = env.reset()
+            agent.start_rollout(obs_shape=state.shape)
+            for episode in tqdm(range(1, args.episodes + 1)):
+                episode_reward = 0
+                episode_length = 0
+                logger.start_episode()
+                # Collect n_steps transitions
+                for _ in range(agent.n_steps):
+                    a, v, lp = agent.select_action(state, stochastic=True, store=True)
+                    next_state, reward, done, truncated, _ = env.step(a)
+                    agent.store_step(state, a, reward, bool(done or truncated), v, lp)
+                    state = next_state
+                    episode_reward += reward
+                    episode_length += 1
+                    if done or truncated:
+                        state, _ = env.reset()
+                # Bootstrap and update
+                with torch.no_grad():
+                    s_t = agent._to_tensor_obs(state)
+                    _, v = agent.net(s_t)
+                    last_v = float(v.squeeze(0).item())
+                losses = agent.update(last_v)
+                # Prepare next rollout buffer
+                agent.start_rollout(obs_shape=state.shape)
+                logger.end_episode(episode_reward, episode_length, losses)
+                if episode % 10 == 0:
+                    logger.save()
+                if episode % args.eval_freq == 0:
+                    eval_reward, eval_length = evaluate_agent(agent, map_env_name_to_id(args.env), args.eval_episodes)
+                    print(f"Episode {episode} | Eval Reward: {eval_reward:.2f} | Eval Length: {eval_length:.2f}")
         else:
             raise ValueError(f"Unknown agent: {args.agent}")
     except KeyboardInterrupt:

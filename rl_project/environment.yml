@@ -1,0 +1,24 @@
+name: rl_project
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.11  # Updated to latest stable Python
+  - pytorch>=2.5.0  # Updated to latest PyTorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=11.8  # Adjust based on your CUDA version
+  - numpy>=2.0.0  # Updated to latest NumPy
+  - pandas>=2.0.0  # Updated to latest Pandas
+  - matplotlib>=3.8.0  # Updated to latest Matplotlib
+  - seaborn>=0.13.0  # Updated to latest Seaborn
+  - tqdm>=4.65.0  # Updated to latest tqdm
+  - pip
+  - pip:
+    - gymnasium[atari,accept-rom-license]>=1.2.0  # Latest Gymnasium
+    - gymnasium[mujoco]>=1.2.0  # Latest MuJoCo support
+    - ale-py>=0.11.0  # Latest ALE
+    - opencv-python>=4.8.0  # Latest OpenCV
+    - imageio>=2.30.0  # Latest imageio
+    - imageio-ffmpeg>=0.6.0  # Latest ffmpeg support

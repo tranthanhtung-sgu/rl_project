@@ -87,17 +87,17 @@ def main():
     np.random.seed(42)
     
     # Test agents on different environments
-    test_agent(ReinforceAgent, 'BreakoutNoFrameskip-v4')
-    test_agent(A2CAgent, 'BreakoutNoFrameskip-v4')
-    test_agent(DDPGAgent, 'BreakoutNoFrameskip-v4')
+    test_agent(ReinforceAgent, 'ALE/Breakout-v5')
+    test_agent(A2CAgent, 'ALE/Breakout-v5')
+    test_agent(DDPGAgent, 'ALE/Breakout-v5')
     
-    test_agent(ReinforceAgent, 'SeaquestNoFrameskip-v4')
-    test_agent(A2CAgent, 'SeaquestNoFrameskip-v4')
-    test_agent(DDPGAgent, 'SeaquestNoFrameskip-v4')
+    test_agent(ReinforceAgent, 'ALE/Seaquest-v5')
+    test_agent(A2CAgent, 'ALE/Seaquest-v5')
+    test_agent(DDPGAgent, 'ALE/Seaquest-v5')
     
-    test_agent(ReinforceAgent, 'Ant-v4')
-    test_agent(A2CAgent, 'Ant-v4')
-    test_agent(DDPGAgent, 'Ant-v4')
+    test_agent(ReinforceAgent, 'Ant-v5')
+    test_agent(A2CAgent, 'Ant-v5')
+    test_agent(DDPGAgent, 'Ant-v5')
 
 if __name__ == "__main__":
     main()

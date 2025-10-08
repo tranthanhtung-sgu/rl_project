@@ -26,7 +26,7 @@ class Actor(nn.Module):
                 c, h, w = input_size
             
             # CNN for processing images - based on Practical 8
-            self.features = nn.Sequential(
+            self.feature_extractor = nn.Sequential(
                 nn.Conv2d(c, 32, kernel_size=8, stride=4),
                 nn.ReLU(),
                 nn.Conv2d(32, 64, kernel_size=4, stride=2),
@@ -83,7 +83,7 @@ class Actor(nn.Module):
         if hasattr(self, 'feature_extractor'):
             output_tensor = self.feature_extractor(input_tensor)
         else:
-            output_tensor = self.head(input_tensor)
+            output_tensor = input_tensor
         return int(np.prod(output_tensor.shape))
     
     def forward(self, state):
@@ -97,10 +97,8 @@ class Actor(nn.Module):
             Action scaled to the action space
         """
         if hasattr(self, 'feature_extractor'):
-            x = self.feature_extractor(state)
-            action = self.head(x)
-        else:
-            action = self.head(state)
+            state = self.feature_extractor(state)
+        action = self.head(state)
         # Scale from [-1, 1] to the action space
         return self.max_action * action
 
@@ -202,16 +200,18 @@ class Critic(nn.Module):
         Returns:
             Q-value for the state-action pair
         """
-        state_features = self.state_features(state)
-        x = torch.cat([state_features, action], dim=1)
+        if hasattr(self, 'state_features'):
+            state = self.state_features(state)
+        x = torch.cat([state, action], dim=1)
         q1 = self.q1_head(x)
         q2 = self.q2_head(x)
         return q1, q2
     
     def q1(self, state, action):
         """Get Q1 value only (used for actor updates)"""
-        state_features = self.state_features(state)
-        x = torch.cat([state_features, action], dim=1)
+        if hasattr(self, 'state_features'):
+            state = self.state_features(state)
+        x = torch.cat([state, action], dim=1)
         return self.q1_head(x)
 
 

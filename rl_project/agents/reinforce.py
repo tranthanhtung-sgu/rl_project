@@ -155,11 +155,9 @@ class ReinforceAgent:
         self.policy_network = PolicyNetwork(state_dim, hidden_sizes, action_dim, lr, is_continuous).to(device)
         self.optimizer = optim.Adam(self.policy_network.parameters(), lr=lr)
         
-        # Storage for trajectory data
+        # Storage for trajectory data (mirrors Practical 9 structure)
         self.saved_log_probs = []
         self.rewards = []
-        self.actions = []
-        self.states = []
         
     def preprocess_state(self, state):
         """
@@ -190,7 +188,7 @@ class ReinforceAgent:
         
         return state
     
-    def select_action(self, state, stochastic=True):
+    def select_action(self, state, stochastic=True, store=True):
         """
         Select an action based on the current policy.
         Based on Practical 9 implementation.
@@ -205,45 +203,42 @@ class ReinforceAgent:
         # Preprocess state
         state = self.preprocess_state(state)
         
-        # Store the state for trajectory
-        self.states.append(state.detach())
-        
         if self.is_continuous:
-            # For continuous actions - use MultivariateNormal distribution
+            # For continuous actions - extend Practical 9 ideas to continuous control
             mean, std = self.policy_network(state)
-            # Create diagonal covariance matrix properly
-            cov_matrix = torch.diag_embed(std)
-            distribution = MultivariateNormal(mean, cov_matrix)
+            mean = mean.squeeze(0)
+            std = std.squeeze(0)
+            covariance = torch.diag(std.pow(2))
+            distribution = MultivariateNormal(mean, covariance)
             
             if stochastic:
                 action = distribution.sample()
             else:
-                action = mean  # Deterministic action
+                action = mean
             
             log_prob = distribution.log_prob(action)
             
-            # Store log probability and action
-            self.saved_log_probs.append(log_prob.detach())
-            self.actions.append(action.detach())
+            # Store log probability for REINFORCE update (keep gradients)
+            if store:
+                self.saved_log_probs.append(log_prob)
             
-            return action.cpu().detach().numpy().flatten()
+            return action.detach().cpu().numpy()
         else:
             # For discrete actions - based on Practical 9
-            logits = self.policy_network(state).detach()
+            logits = self.policy_network(state).squeeze(0)
             distribution = Categorical(logits=logits)
             if stochastic:
                 # sample action using action probabilities
                 action = distribution.sample()
             else:
-                # select action with the highest probability
-                # note: we ignore breaking ties randomly (low chance of happening)
+                # select action with the highest probability (ties handled implicitly)
                 action = distribution.probs.argmax()
             
             log_prob = distribution.log_prob(action)
             
-            # Store log probability (detached for test_agents.py)
-            self.saved_log_probs.append(log_prob.detach())
-            self.actions.append(action.detach())
+            # Store log probability for REINFORCE update (keep gradients)
+            if store:
+                self.saved_log_probs.append(log_prob)
             
             return action.item()
     
@@ -272,25 +267,20 @@ class ReinforceAgent:
         for t in reversed(range(T-1)):
             returns[t] = self.rewards[t] + self.gamma * returns[t+1]
         
-        # Convert list of states from trajectory to torch format
-        # Remove the batch dimension from each state before stacking
-        states = torch.stack([state.squeeze(0) for state in self.states])
-        actions = torch.stack(self.actions)
-        
         # Update policy network based on Practical 9
         self.optimizer.zero_grad()
         
-        if self.is_continuous:
-            # For continuous actions
-            mean, std = self.policy_network(states)
-            cov_matrix = torch.diag_embed(std)
-            dist = torch.distributions.MultivariateNormal(mean, cov_matrix)
-            loss = torch.mean(-dist.log_prob(actions) * returns)
-        else:
-            # For discrete actions
-            logits = self.policy_network(states)
-            dist = torch.distributions.Categorical(logits=logits)
-            loss = torch.mean(-dist.log_prob(actions) * returns)
+        # Stack saved log probabilities (kept from action selection)
+        log_probs = torch.stack(self.saved_log_probs)
+
+        # Ensure devices are aligned
+        returns = returns.to(log_probs.device)
+
+        # Normalize returns to reduce variance (standard REINFORCE enhancement)
+        if returns.numel() > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+        loss = -torch.sum(log_probs * returns) / len(returns)
         
         loss.backward()
         self.optimizer.step()
@@ -300,8 +290,6 @@ class ReinforceAgent:
         # Clear trajectory data
         self.saved_log_probs = []
         self.rewards = []
-        self.actions = []
-        self.states = []
         
         return loss_value
     

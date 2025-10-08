@@ -21,13 +21,13 @@ class FeatureExtractor(nn.Module):
             else:  # (c, h, w)
                 c, h, w = input_dim
             
-            # CNN for processing images
+            # CNN for processing images - increased channels for GPU utilization
             self.features = nn.Sequential(
-                nn.Conv2d(c, 32, kernel_size=8, stride=4),
+                nn.Conv2d(c, 64, kernel_size=8, stride=4),
                 nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.Conv2d(64, 128, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                nn.Conv2d(128, 256, kernel_size=3, stride=1),
                 nn.ReLU(),
                 nn.Flatten()
             )
@@ -174,9 +174,13 @@ class A2CAgent:
         self.is_continuous = is_continuous
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
+        # Entropy decay schedule (simple linear/cosine hybrid)
+        self.initial_entropy_coef = entropy_coef
+        self.min_entropy_coef = entropy_coef * 0.1
+        self.decay_steps = 200000  # tune per run length
         
-        # Set default hidden sizes based on Practical 9
-        hidden_sizes = (64, 64) if not is_continuous else (128, 128)
+        # Set default hidden sizes based on Practical 9 - increased for GPU utilization
+        hidden_sizes = (512, 512, 256) if not is_continuous else (512, 512, 256)
         
         # Initialize shared feature extractor based on Practical 9
         self.feature_extractor = FeatureExtractor(state_dim, hidden_sizes).to(device)
@@ -196,12 +200,11 @@ class A2CAgent:
         self.actor_optimizer = optim.Adam(self.policy_network.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.value_network.parameters(), lr=critic_lr)
         
-        # Storage for trajectory data
+        # Storage for trajectory data (mirrors Practical 9 pattern)
         self.saved_log_probs = []
         self.saved_values = []
+        self.entropies = []
         self.rewards = []
-        self.actions = []
-        self.states = []
         
     def preprocess_state(self, state):
         """
@@ -232,7 +235,7 @@ class A2CAgent:
         
         return state
     
-    def select_action(self, state, stochastic=True):
+    def select_action(self, state, stochastic=True, store=True):
         """
         Select an action based on the current policy and estimate its value.
         Based on Practical 9 implementation.
@@ -247,50 +250,54 @@ class A2CAgent:
         # Preprocess state
         state = self.preprocess_state(state)
         
-        # Store the state
-        self.states.append(state.detach())
-        
-        # Estimate the state value
+        # Estimate the state value (keep gradients for critic update)
         value = self.value_network(state)
-        self.saved_values.append(value.detach())
+        if value.dim() > 0:
+            value = value.squeeze(0)
+        if store:
+            self.saved_values.append(value)
         
         if self.is_continuous:
             # For continuous actions
             mean, std = self.policy_network(state)
-            # Create diagonal covariance matrix properly
-            cov_matrix = torch.diag_embed(std)
-            distribution = MultivariateNormal(mean, cov_matrix)
+            mean = mean.squeeze(0)
+            std = std.squeeze(0)
+            covariance = torch.diag(std.pow(2))
+            distribution = MultivariateNormal(mean, covariance)
             if stochastic:
                 action = distribution.sample()
             else:
-                action = mean  # Deterministic action
+                action = mean
             log_prob = distribution.log_prob(action)
+            entropy = distribution.entropy()
             
             # Convert to numpy for environment
             action_np = action.cpu().detach().numpy().flatten()
             
-            # Store log probability and action
-            self.saved_log_probs.append(log_prob.detach())
-            self.actions.append(action.detach())
+            # Store log probability and entropy for update
+            if store:
+                self.saved_log_probs.append(log_prob)
+                self.entropies.append(entropy)
             
             return action_np
         else:
             # For discrete actions - based on Practical 9
-            logits = self.policy_network(state)
+            logits = self.policy_network(state).squeeze(0)
             distribution = Categorical(logits=logits)
             if stochastic:
                 # sample action using action probabilities
                 action = distribution.sample()
             else:
                 # select action with the highest probability
-                # note: we ignore breaking ties randomly (low chance of happening)
                 action = distribution.probs.argmax()
             
             log_prob = distribution.log_prob(action)
+            entropy = distribution.entropy()
             
-            # Store log probability and action
-            self.saved_log_probs.append(log_prob.detach())
-            self.actions.append(action.detach())
+            # Store log probability and entropy
+            if store:
+                self.saved_log_probs.append(log_prob)
+                self.entropies.append(entropy)
             
             return action.item()
     
@@ -304,40 +311,13 @@ class A2CAgent:
         self.rewards.append(reward)
     
     def compute_returns(self, next_value, done):
-        """
-        Compute returns and advantages for the collected trajectory.
-        
-        Args:
-            next_value: Value estimate for the next state
-            done: Whether the episode is done
-            
-        Returns:
-            Tuple of (returns, advantages)
-        """
-        # Initialize lists for returns and advantages
+        """Compute discounted returns for the collected trajectory."""
         returns = []
-        advantages = []
-        
-        # Initialize the return with next_value if not done, otherwise with 0
-        R = 0 if done else next_value.item()
-        
-        # Calculate returns and advantages from the end of the episode
-        for i in reversed(range(len(self.rewards))):
-            R = self.rewards[i] + self.gamma * R
-            advantage = R - self.saved_values[i].item()
-            
+        R = 0.0 if done else next_value.item()
+        for reward in reversed(self.rewards):
+            R = reward + self.gamma * R
             returns.insert(0, R)
-            advantages.insert(0, advantage)
-        
-        # Convert to tensors
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
-        
-        # Normalize advantages
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        return returns, advantages
+        return torch.tensor(returns, dtype=torch.float32, device=self.device)
     
     def update_policy(self, next_state=None, done=True):
         """
@@ -361,80 +341,47 @@ class A2CAgent:
             next_state = self.preprocess_state(next_state)
             with torch.no_grad():
                 next_value = self.value_network(next_state)
+                if next_value.dim() > 0:
+                    next_value = next_value.squeeze(0)
         
         # Compute returns and advantages - based on Practical 9
-        returns, advantages = self.compute_returns(next_value, done)
+        returns = self.compute_returns(next_value, done)
+        values = torch.stack(self.saved_values)
+        advantages = returns - values.detach()
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
         # Set networks to training mode
         self.policy_network.train()
         self.value_network.train()
         
         # Calculate critic loss - based on Practical 9
-        values = torch.cat(self.saved_values)
         critic_loss = nn.MSELoss()(values, returns)
         
-        # Prepare states and actions for actor update
-        states = torch.stack([state.squeeze(0) for state in self.states])
-        actions = torch.stack(self.actions)
+        # Stack stored log probabilities and entropies
+        log_probs = torch.stack(self.saved_log_probs)
+        entropies = torch.stack(self.entropies)
         
-        # Calculate actor loss - based on Practical 9
-        actor_loss = torch.tensor(0.0, device=self.device)
-        entropy = torch.tensor(0.0, device=self.device)
+        # Actor loss and entropy bonus (Practical 9 pattern)
+        actor_loss = -(log_probs * advantages).mean()
+        entropy = entropies.mean()
+        # Update entropy coefficient via schedule
+        self._update_entropy_coef()
         
-        # For test_agents.py, we'll just return dummy values if there's an issue
-        try:
-            # Recompute log probabilities to maintain gradients
-            if self.is_continuous:
-                # For continuous actions
-                mean, std = self.policy_network(states)
-                cov_matrix = torch.diag_embed(std)
-                dist = torch.distributions.MultivariateNormal(mean, cov_matrix)
-                log_probs = dist.log_prob(actions)
-            else:
-                # For discrete actions
-                logits = self.policy_network(states)
-                dist = torch.distributions.Categorical(logits=logits)
-                log_probs = dist.log_prob(actions)
-            
-            # Calculate actor loss as a single tensor operation
-            actor_loss = -(log_probs * advantages).sum()
-            
-            # Add entropy term (for exploration) - based on Practical 9
-            if self.is_continuous:
-                # For continuous actions, entropy is already part of the log_prob
-                entropy = torch.tensor(0.0, device=self.device)
-            else:
-                # For discrete actions, calculate entropy separately
-                probs = torch.exp(log_probs)
-                entropy = -(probs * log_probs).sum()
-            
-            # Normalize losses by trajectory length
-            if len(log_probs) > 0:
-                actor_loss = actor_loss / len(log_probs)
-                entropy = entropy / len(log_probs)
-            
-            # Calculate total loss - based on Practical 9
-            total_loss = actor_loss + self.value_loss_coef * critic_loss - self.entropy_coef * entropy
-            
-            # Update actor and critic networks - based on Practical 9
-            self.actor_optimizer.zero_grad()
-            self.critic_optimizer.zero_grad()
-            total_loss.backward()
-            self.actor_optimizer.step()
-            self.critic_optimizer.step()
-        except Exception as e:
-            print(f"Warning: Error in A2C update: {e}")
-            # Use default values
-            actor_loss = torch.tensor(0.0, device=self.device)
-            entropy = torch.tensor(0.0, device=self.device)
-            total_loss = critic_loss  # Just use critic loss
+        total_loss = actor_loss + self.value_loss_coef * critic_loss - self.entropy_coef * entropy
+        
+        # Update actor and critic networks
+        self.actor_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad()
+        total_loss.backward()
+        self.actor_optimizer.step()
+        self.critic_optimizer.step()
         
         # Clear trajectory data
         self.saved_log_probs = []
         self.saved_values = []
+        self.entropies = []
         self.rewards = []
-        self.actions = []
-        self.states = []
         
         return {
             'actor_loss': actor_loss.item(),
@@ -442,6 +389,18 @@ class A2CAgent:
             'entropy': entropy.item(),
             'total_loss': total_loss.item()
         }
+
+    def _update_entropy_coef(self):
+        # Cosine decay to 10% of initial over decay_steps, then clamp
+        t = getattr(self, 'steps_seen', 0)
+        self.steps_seen = t + 1
+        if self.decay_steps <= 0:
+            return
+        import math
+        frac = min(1.0, self.steps_seen / float(self.decay_steps))
+        cosine = 0.5 * (1 + math.cos(math.pi * frac))  # 1->0
+        target = self.min_entropy_coef + (self.initial_entropy_coef - self.min_entropy_coef) * cosine
+        self.entropy_coef = max(self.min_entropy_coef, float(target))
     
     def save(self, path):
         """

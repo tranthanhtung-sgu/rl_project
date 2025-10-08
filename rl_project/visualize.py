@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from agents import ReinforceAgent, A2CAgent, DDPGAgent
+from agents import ReinforceAgent, A2CAgent, DDPGAgent, PPOAgent
 from environments import make_env, get_env_dimensions
 from utils import set_seeds
 
@@ -16,7 +16,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Visualize trained RL agents')
     
     # Agent and environment selection
-    parser.add_argument('--agent', type=str, required=True, choices=['reinforce', 'a2c', 'ddpg'],
+    parser.add_argument('--agent', type=str, required=True, choices=['reinforce', 'a2c', 'ddpg', 'ppo'],
                         help='Agent to visualize')
     parser.add_argument('--env', type=str, required=True, choices=['ant', 'breakout', 'seaquest'],
                         help='Environment to visualize on')
@@ -40,9 +40,9 @@ def parse_args():
 def map_env_name_to_id(env_name):
     """Map environment name to Gymnasium ID"""
     env_map = {
-        'ant': 'Ant-v4',
-        'breakout': 'BreakoutNoFrameskip-v4',
-        'seaquest': 'SeaquestNoFrameskip-v4'
+        'ant': 'Ant-v5',
+        'breakout': 'ALE/Breakout-v5',
+        'seaquest': 'ALE/Seaquest-v5'
     }
     return env_map.get(env_name)
 
@@ -76,6 +76,23 @@ def create_agent(agent_name, state_dim, action_dim, is_continuous, args):
             gamma=0.99,
             device=args.device
         )
+    elif agent_name == 'ppo':
+        return PPOAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            is_continuous=is_continuous,
+            lr=2.5e-4,
+            gamma=0.99,
+            gae_lambda=0.90,
+            clip_range=0.10,
+            ent_coef=0.01,
+            vf_coef=0.5,
+            n_steps=128,
+            batch_size=256,
+            n_epochs=4,
+            max_grad_norm=0.5,
+            device=args.device
+        )
     else:
         raise ValueError(f"Unknown agent: {agent_name}")
 
@@ -106,7 +123,10 @@ def visualize_episode(agent, env, episode_num, save_video=False):
     
     while not (done or truncated):
         # Select action using the trained policy
-        action = agent.select_action(state, stochastic=False)
+        try:
+            action = agent.select_action(state, stochastic=False, store=False)
+        except TypeError:
+            action = agent.select_action(state, stochastic=False)
         
         # Take action in environment
         next_state, reward, done, truncated, info = env.step(action)
